@@ -1,1 +1,126 @@
-This file was created by IntelliJ IDEA 12.0 for binding GitHub repository
+# Overview
+
+An implementation of the HyperLogLog approximate cardinality estimation algorithm (as well as Linear Counting), as a Hive User-defined Aggregation Function (UDAF).
+
+Relies on [stream-lib](https://github.com/clearspring/stream-lib) for implementation of the relevant algorithms.
+
+## Installation
+
+Clone the repo
+
+    $ git clone URL
+
+Then build the fat JAR using Maven
+
+    $ mvn package
+
+The default versions to be built against are `hive 0.9.0` and `hadoop 1.1.0`, <b>however<b> the packaging will exclude these dependencies under the assumption that they will be provided in the Hadoop/Hive installation (e.g. on a cluster). I've tested on CDH4.0.0 in production, but this should also apply if you've set up Hadoop and Hive in local mode, assuming your CLASSPATH is correct.
+
+## Example Usaage
+
+If running in local mode, simply start hive using `/path/to/hive/bin/hive`. If running on a cluster, copy the fat jar (`hive-udf-VERSION.jar`) to an appropriate directory on the cluster, `cd` to that directory, and start hive.
+
+Then add the jar to the Hive CLI runtime:
+
+    hive> add jar hive-udf-0.0.1-SNAPSHOT.jar;
+    hive> create temporary function approx_distinct as 'com.github.mlnick.hive.udaf.UDAFCardinalityEstimator'; 
+
+(You can also supply the full path to the jar when adding it, e.g. `add jar /path/to/jar/XYZ.jar`, or put your UDF jars in S3, for example).
+
+If you run into Java heap errors (likely with higher <i>b</i> parameter for HyperLogLog), try increasing the memory allocated:
+
+    hive> set mapred.child.java.opts=-Xmx2000m;
+
+The UDAF returns a struct, containing the following fields
+    
+    type            Type of Cardinality Estimator {HLL, LC}
+    cardinality     Estimated cardinality of the column
+    binary          Binary serialised Cardinality Estimator
+
+You can therefore pull out just the cardinality by using `column.cardinality`, or store the result in a column with type of `struct {type string; cardinality bigint; binary binary}` for the relevant column, to be extracted later.
+
+<b>NOTE</b> if you just return the full struct (i.e. `select approx_distinct(x) ...`, you will get a bunch of binary nonsense in the CLI, so to view the results use `.cardinality`).
+
+<b>Try it out on your data!</b>
+
+    -- the default is HyperLogLog with b=16
+    select 
+        approx_distinct(COLUMN).cardinality,
+        approx_distinct(COLUMN, 'hll', 5).cardinality,
+        approx_distinct(COLUMN, 'hll', 24).cardinality
+    from TABLE;
+    select count(distinct COLUMN) from TABLE;
+
+    -- default for Linear Counting is 1 million bits size
+    select approx_distinct(COLUMN, 'lc').cardinality from TABLE;
+    select count(distinct COLUMN) from TABLE;
+
+<b>NOTE</b> that using approx_distinct(x) and count(distinct x) in the same query leads to weird errors with Java heap space (still trying to figure out why).
+
+## Accuracy
+
+My quick and dirty tests indicate that the Linear Counting approach is not very robust when used with MapReduce, since the error rates seem to compound very quickly even for high bit sizes. HyperLogLog, with sufficient bit size parameter (e.g. `b = 16` to `b = 26` range) seems fairly robust for moderate sizes of unique values.
+
+Here are some stats:
+
+    Expected Accuracy (HyperLogLog)  
+    b parameter 
+    5           18.38%
+    16          0.41%
+    24          0.03%
+
+<u>QUERY 1</u>
+
+    700 million rows, ~7.5 million unique values. ~200 mappers, 1 reducer (1G heap).
+
+    Algorithm                   Cardinality Estimate        Error Rate (%)
+    COUNT(DISTINCT x)           7,559,481                         
+    Linear Counting             6,266,403                   -17.11%
+    HyperLogLog (b=5)           9,625,215                   27.33%
+    HyperLogLog (b=16)          7,536,626                   -0.30%
+    HyperLogLog (b=24)          7,546,374                   -0.17%
+
+<u>QUERY 2 - with Group By</u>
+
+    Grouped Field (sample)  Records Exact Uniques   Approx Uniques (b=16)   Error (%)
+    A   233,024,253     3,451,201   3,446,017  -0.15%
+    B   223,350,154     2,810,703   2,796,881  -0.49%
+    C   152,874,611     2,889,500   2,884,780  -0.16%
+    D   22,144,205      573,330     571,830    -0.26%
+    E   20,638,765      1,322,098   1,320,369  -0.13%
+    F   19,215,734      504,509     504,751     0.05%
+    G   18,896,848      280,102     280,943     0.30%
+    H   17,998,980      3,173,567   3,170,974  -0.08%
+                
+    Overall uniques                 7,679,458          
+    Overall approx uniques          7,665,425          
+    Overall error rate                 -0.18%  
+
+<u>QUERY 3 - Large cardinality, with and without long-range correction</u>
+
+    Overall distincts               500,000,000 
+    Approx distincts (b=26)         529,757,672 
+    Error rate                           -5.62%
+    Approx (without long-range 
+            correction, default)    498,447,667 
+    Error rate                           -0.31%  
+
+Error rates without long-range correction for large cardinalities are of similar magnitude as for smaller cardinalities.
+
+## References
+
+Relies on Clearspring's excellent [stream-lib](https://github.com/clearspring/stream-lib) project for the algorithm implementations.
+
+See [this blog post](http://highlyscalable.wordpress.com/2012/05/01/probabilistic-structures-web-analytics-data-mining/), [this blog post](http://blog.aggregateknowledge.com/2012/10/25/sketch-of-the-day-hyperloglog-cornerstone-of-a-big-data-infrastructure/) and [this blog post]() for in depth discussions of HyperLogLog and Linear Counting (as well as Count-Min Sketch and others).
+
+The actual papers:
+
+* [HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm](http://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf)
+* [A linear-time probabilistic counting algorithm for database applications](http://dblab.kaist.ac.kr/Publication/pdf/ACM90_TODS_v15n2.pdf)
+
+## TODO
+
+* Tests!
+* Add set intersection for HyperLogLog to stream-lib
+* Other algorithms (count-min sketch etc)
+* HyperLogLog (and other monoids) from algebird in Scala
