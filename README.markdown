@@ -2,4 +2,4 @@ An implementation of the HyperLogLog approximate cardinality estimation algorith
 
 Relies on [stream-lib](https://github.com/clearspring/stream-lib) for implementation of the relevant algorithms.
 
-See the Wiki (https://github.com/MLnick/hive-udf/wiki)
+See the [Wiki](https://github.com/MLnick/hive-udf/wiki) for usage instructions.
